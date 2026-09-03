@@ -1,0 +1,93 @@
+:root {
+  --feed-bg: #f5f7fb;
+  --post-border: #e8edf5;
+}
+
+body {
+  background: var(--feed-bg);
+  min-height: 100vh;
+}
+
+.navbar-brand {
+  letter-spacing: 0.2px;
+}
+
+.composer textarea {
+  resize: vertical;
+  min-height: 180px;
+  line-height: 1.45;
+}
+
+.feed {
+  overflow: hidden;
+}
+
+.post-item {
+  border-color: var(--post-border) !important;
+}
+
+.post-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 1rem;
+  line-height: 1.55;
+}
+
+.post-date {
+  font-size: 0.875rem;
+}
+
+.post-actions .btn {
+  min-width: 72px;
+}
+
+.min-width-0 {
+  min-width: 0;
+}
+
+.image-preview,
+.post-image-wrap {
+  max-width: 720px;
+}
+
+.image-preview img,
+.post-image {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  width: auto;
+  height: auto;
+  border-radius: 0.75rem;
+  border: 1px solid var(--post-border);
+  background: #fff;
+  box-shadow: 0 0.25rem 0.75rem rgba(15, 23, 42, 0.08);
+}
+
+.post-image {
+  object-fit: contain;
+}
+
+#formMessage.text-danger,
+#editMessage.text-danger {
+  font-weight: 600;
+}
+
+#formMessage.text-success,
+#editMessage.text-success {
+  font-weight: 600;
+}
+
+.pagination .page-link {
+  cursor: pointer;
+}
+
+@media (max-width: 576px) {
+  .post-actions {
+    width: 100%;
+    margin-top: 0.75rem;
+  }
+
+  .post-actions .btn {
+    flex: 1;
+  }
+}
