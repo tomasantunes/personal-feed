@@ -132,176 +132,204 @@ def _validate_image(data):
     if raw_data.startswith('data:') and ',' in raw_data:
         raw_data = raw_data.split(',', 1)[1]
 
-    raw_data = ''.join(raw_data.split())
-
     try:
         decoded = base64.b64decode(raw_data, validate=True)
     except Exception:
-        return None, 'Image data is invalid'
+        return None, 'Image data must be valid base64'
 
     if len(decoded) > MAX_IMAGE_BYTES:
         return None, 'Image must be 5 MB or smaller'
 
-    normalized = base64.b64encode(decoded).decode('ascii')
     return {
         'filename': filename,
         'mime_type': mime_type,
-        'data': normalized,
+        'data': base64.b64encode(decoded).decode('ascii'),
         'size': len(decoded),
     }, None
 
 
-def _make_export(posts):
+def _collection(db):
+    collection = db[COLLECTION_NAME]
+    try:
+        collection.create_index([('created_at', -1)])
+        collection.create_index([('content', 'text')])
+    except Exception:
+        pass
+    return collection
+
+
+def _normalize_path(path):
+    path = path or '/'
+    if '?' in path:
+        path = path.split('?', 1)[0]
+    if not path.startswith('/'):
+        path = '/' + path
+    if path != '/' and path.endswith('/'):
+        path = path.rstrip('/')
+    return path
+
+
+def _search_filter(query):
+    q = _get_query_value(query, 'q', '')
+    if not isinstance(q, str):
+        q = str(q or '')
+    q = q.strip()
+    if not q:
+        return {}, ''
+    return {'content': {'$regex': re.escape(q), '$options': 'i'}}, q
+
+
+def _list_posts(db, query):
+    collection = _collection(db)
+    page = _parse_positive_int(_get_query_value(query, 'page', 1), 1)
+    limit = _parse_positive_int(_get_query_value(query, 'limit', DEFAULT_LIMIT), DEFAULT_LIMIT, maximum=MAX_LIMIT)
+    search_filter, q = _search_filter(query)
+
+    total = collection.count_documents(search_filter)
+    total_pages = max(1, (total + limit - 1) // limit)
+    page = min(page, total_pages)
+    skip = (page - 1) * limit
+
+    cursor = collection.find(search_filter).sort('created_at', -1).skip(skip).limit(limit)
+    posts = [_serialize_post(post) for post in cursor]
+    return {
+        'ok': True,
+        'posts': posts,
+        'page': page,
+        'limit': limit,
+        'total': total,
+        'total_pages': total_pages,
+        'query': q,
+    }
+
+
+def _create_post(db, data):
+    content, error = _validate_content(data)
+    if error:
+        return _json_error(error)
+
+    image, image_error = _validate_image(data)
+    if image_error:
+        return _json_error(image_error)
+
+    now = _now()
+    document = {
+        'content': content,
+        'created_at': now,
+        'updated_at': now,
+    }
+    if image:
+        document['image'] = image
+
+    result = _collection(db).insert_one(document)
+    document['_id'] = result.inserted_id
+    return {'ok': True, 'post': _serialize_post(document)}, 201
+
+
+def _update_post(db, post_id, data):
+    oid = _parse_object_id(post_id)
+    if oid is None:
+        return _json_error('Invalid post id', 400)
+
+    content, error = _validate_content(data)
+    if error:
+        return _json_error(error)
+
+    image, image_error = _validate_image(data)
+    if image_error:
+        return _json_error(image_error)
+
+    update = {
+        '$set': {
+            'content': content,
+            'updated_at': _now(),
+        }
+    }
+
+    if image:
+        update['$set']['image'] = image
+    elif isinstance(data, dict) and data.get('remove_image'):
+        update['$unset'] = {'image': ''}
+
+    post = _collection(db).find_one_and_update(
+        {'_id': oid},
+        update,
+        return_document=ReturnDocument.AFTER,
+    )
+    if not post:
+        return _json_error('Post not found', 404)
+    return {'ok': True, 'post': _serialize_post(post)}
+
+
+def _delete_post(db, post_id):
+    oid = _parse_object_id(post_id)
+    if oid is None:
+        return _json_error('Invalid post id', 400)
+    result = _collection(db).delete_one({'_id': oid})
+    if result.deleted_count == 0:
+        return _json_error('Post not found', 404)
+    return {'ok': True, 'deleted': True}
+
+
+def _export_posts(db):
+    collection = _collection(db)
+    posts = list(collection.find({}).sort('created_at', -1))
+    export_posts = []
+
     buffer = io.BytesIO()
-    text_lines = []
-    manifest = []
-
-    with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
         for index, post in enumerate(posts, start=1):
-            post_id = str(post.get('_id'))
-            content = post.get('content', '')
-            one_line = ' '.join(str(content).replace('\r', '\n').splitlines()).strip()
-            text_lines.append(one_line)
-
-            entry = {
-                'id': post_id,
-                'created_at': _serialize_datetime(post.get('created_at')),
-                'updated_at': _serialize_datetime(post.get('updated_at')),
-                'content': content,
-                'image': None,
-            }
-
+            serialized = _serialize_post(post, include_image=False)
             image = post.get('image') or None
             if isinstance(image, dict) and image.get('data') and image.get('mime_type'):
-                filename = _safe_filename(image.get('filename') or 'image')
-                ext = _extension_for_image(image.get('mime_type'), filename)
-                stem = filename.rsplit('.', 1)[0] if '.' in filename else filename
-                zip_name = f'images/{index:04d}_{post_id}_{_safe_filename(stem)}{ext}'
+                ext = _extension_for_image(image.get('mime_type'), image.get('filename'))
+                image_name = f'images/{index:04d}_{str(post.get("_id"))}{ext}'
                 try:
-                    archive.writestr(zip_name, base64.b64decode(image.get('data')))
-                    entry['image'] = zip_name
+                    zf.writestr(image_name, base64.b64decode(image.get('data')))
+                    serialized['image_file'] = image_name
+                    serialized['image_filename'] = image.get('filename') or 'image'
+                    serialized['image_mime_type'] = image.get('mime_type')
                 except Exception:
-                    entry['image'] = None
+                    serialized['image_file_error'] = 'Unable to export image'
+            export_posts.append(serialized)
 
-            manifest.append(entry)
+        zf.writestr('posts.json', json.dumps(export_posts, indent=2, ensure_ascii=False))
+        zf.writestr('README.txt', 'Personal Feed export. Posts are in posts.json. Images, if any, are in the images folder.\n')
 
-        archive.writestr('feed-text.txt', '\n'.join(text_lines) + ('\n' if text_lines else ''))
-        archive.writestr('feed-manifest.json', json.dumps(manifest, indent=2, ensure_ascii=False))
-
-    buffer.seek(0)
-    return base64.b64encode(buffer.read()).decode('ascii')
+    encoded = base64.b64encode(buffer.getvalue()).decode('ascii')
+    filename = 'personal-feed-export-%s.zip' % datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
+    return {
+        'ok': True,
+        'filename': filename,
+        'zip_base64': encoded,
+        'count': len(posts),
+    }
 
 
 def handle_request(path, method, data, query, db, headers):
+    path = _normalize_path(path)
     method = (method or 'GET').upper()
-    normalized = '/' + (path or '').strip('/')
-    if normalized == '/':
-        normalized = ''
 
-    posts = db[COLLECTION_NAME]
-    posts.create_index([('created_at', -1)])
-
-    if normalized == '/posts':
+    if path == '/posts':
         if method == 'GET':
-            page = _parse_positive_int(_get_query_value(query, 'page', 1), 1)
-            limit = _parse_positive_int(_get_query_value(query, 'limit', DEFAULT_LIMIT), DEFAULT_LIMIT, 1, MAX_LIMIT)
-            skip = (page - 1) * limit
-            total = posts.count_documents({})
-            total_pages = max(1, (total + limit - 1) // limit)
-
-            if total and page > total_pages:
-                page = total_pages
-                skip = (page - 1) * limit
-
-            cursor = posts.find({}).sort('created_at', -1).skip(skip).limit(limit)
-            return {
-                'ok': True,
-                'posts': [_serialize_post(post) for post in cursor],
-                'page': page,
-                'limit': limit,
-                'total': total,
-                'total_pages': total_pages,
-            }
-
+            return _list_posts(db, query)
         if method == 'POST':
-            content, error = _validate_content(data)
-            if error:
-                return _json_error(error)
-
-            image_doc, image_error = _validate_image(data)
-            if image_error:
-                return _json_error(image_error)
-
-            timestamp = _now()
-            document = {
-                'content': content,
-                'created_at': timestamp,
-                'updated_at': timestamp,
-            }
-            if image_doc:
-                document['image'] = image_doc
-
-            result = posts.insert_one(document)
-            document['_id'] = result.inserted_id
-            return {'ok': True, 'post': _serialize_post(document)}, 201
-
+            return _create_post(db, data)
         return _json_error('Method not allowed', 405)
 
-    if normalized == '/export':
-        if method != 'GET':
-            return _json_error('Method not allowed', 405)
-        all_posts = list(posts.find({}).sort('created_at', 1))
-        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
-        return {
-            'ok': True,
-            'filename': f'personal-feed-{timestamp}.zip',
-            'mime_type': 'application/zip',
-            'data': _make_export(all_posts),
-            'count': len(all_posts),
-        }
-
-    if normalized.startswith('/posts/'):
-        post_id = normalized.split('/', 2)[2]
-        object_id = _parse_object_id(post_id)
-        if object_id is None:
-            return _json_error('Invalid post id', 400)
-
+    if path.startswith('/posts/'):
+        post_id = path.split('/', 2)[2]
+        if not post_id:
+            return {'ok': False, 'error': 'Not found'}, 404
         if method == 'PUT':
-            content, error = _validate_content(data)
-            if error:
-                return _json_error(error)
-
-            image_doc, image_error = _validate_image(data)
-            if image_error:
-                return _json_error(image_error)
-
-            update = {
-                '$set': {
-                    'content': content,
-                    'updated_at': _now(),
-                }
-            }
-
-            if image_doc:
-                update['$set']['image'] = image_doc
-            elif isinstance(data, dict) and data.get('remove_image'):
-                update['$unset'] = {'image': ''}
-
-            updated = posts.find_one_and_update(
-                {'_id': object_id},
-                update,
-                return_document=ReturnDocument.AFTER,
-            )
-            if not updated:
-                return _json_error('Post not found', 404)
-            return {'ok': True, 'post': _serialize_post(updated)}
-
+            return _update_post(db, post_id, data)
         if method == 'DELETE':
-            result = posts.delete_one({'_id': object_id})
-            if result.deleted_count == 0:
-                return _json_error('Post not found', 404)
-            return {'ok': True}
+            return _delete_post(db, post_id)
+        return _json_error('Method not allowed', 405)
 
+    if path == '/export':
+        if method == 'GET':
+            return _export_posts(db)
         return _json_error('Method not allowed', 405)
 
     return {'ok': False, 'error': 'Not found'}, 404

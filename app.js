@@ -5,7 +5,10 @@ const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp
 
 let currentPage = 1;
 let totalPages = 1;
+let totalPosts = 0;
 let editModal;
+let searchTimer;
+let currentSearch = "";
 
 function escapeHtml(value) {
   return String(value || "")
@@ -138,6 +141,7 @@ function renderPosts(posts) {
 
   if (!posts.length) {
     $("#emptyState").removeClass("d-none");
+    $("#emptyText").text(currentSearch ? `No posts contain “${currentSearch}”.` : "Create your first post using the textarea above.");
     return;
   }
 
@@ -146,275 +150,260 @@ function renderPosts(posts) {
   posts.forEach((post) => {
     const content = escapeHtml(post.content);
     const created = formatDate(post.created_at);
-    const updated = post.updated_at && post.updated_at !== post.created_at ? `<span class="ms-2 text-muted">Edited ${escapeHtml(formatDate(post.updated_at))}</span>` : "";
-    const imageHtml = post.image && post.image.data_uri ? `
-      <div class="post-image-wrap mt-3">
-        <img class="post-image" src="${escapeHtml(post.image.data_uri)}" alt="Attached image for post">
-        <div class="small text-muted mt-1">${escapeHtml(post.image.filename || "Attached image")}</div>
-      </div>
-    ` : "";
+    const updated = post.updated_at && post.updated_at !== post.created_at ? ` · edited ${formatDate(post.updated_at)}` : "";
+    const imageHtml = post.image && post.image.data_uri
+      ? `<div class="post-image-wrap mt-3"><img class="post-image" src="${post.image.data_uri}" alt="${escapeHtml(post.image.filename || "Post image")}"></div>`
+      : "";
 
-    const item = $(`
+    const item = `
       <article class="list-group-item post-item p-4" data-id="${escapeHtml(post._id)}">
-        <div class="d-flex flex-column flex-sm-row justify-content-between gap-2">
-          <div class="flex-grow-1 min-width-0">
-            <div class="post-date text-muted mb-2">
-              <strong>${escapeHtml(created)}</strong>${updated}
-            </div>
+        <div class="d-flex flex-wrap justify-content-between gap-3">
+          <div class="min-width-0 flex-grow-1">
             <div class="post-content">${content}</div>
             ${imageHtml}
+            <div class="post-date text-muted mt-3">${created}${updated}</div>
           </div>
           <div class="post-actions d-flex gap-2 align-self-start">
             <button class="btn btn-outline-primary btn-sm edit-post" type="button">Edit</button>
             <button class="btn btn-outline-danger btn-sm delete-post" type="button">Delete</button>
           </div>
         </div>
-      </article>
-    `);
-
-    item.data("post", post);
+      </article>`;
     $list.append(item);
   });
 }
 
-function renderPagination(page, pages) {
+function renderPagination() {
   const $pagination = $("#pagination");
   $pagination.empty();
 
-  if (pages <= 1) return;
+  if (totalPages <= 1) return;
 
-  const addItem = (label, targetPage, disabled = false, active = false) => {
-    const item = $(`
-      <li class="page-item ${disabled ? "disabled" : ""} ${active ? "active" : ""}">
-        <a class="page-link" role="button">${label}</a>
-      </li>
-    `);
-    if (!disabled && !active) {
-      item.on("click", () => loadPosts(targetPage));
-    }
-    $pagination.append(item);
+  const makeItem = (label, page, disabled = false, active = false) => {
+    return `<li class="page-item ${disabled ? "disabled" : ""} ${active ? "active" : ""}">
+      <button class="page-link" type="button" data-page="${page}" ${disabled ? "disabled" : ""}>${label}</button>
+    </li>`;
   };
 
-  addItem("Previous", page - 1, page <= 1);
+  $pagination.append(makeItem("Previous", currentPage - 1, currentPage <= 1));
 
-  const start = Math.max(1, page - 2);
-  const end = Math.min(pages, page + 2);
-
-  if (start > 1) {
-    addItem("1", 1, false, page === 1);
-    if (start > 2) addItem("…", page, true);
+  const start = Math.max(1, currentPage - 2);
+  const end = Math.min(totalPages, currentPage + 2);
+  for (let page = start; page <= end; page += 1) {
+    $pagination.append(makeItem(page, page, false, page === currentPage));
   }
 
-  for (let p = start; p <= end; p += 1) {
-    addItem(String(p), p, false, p === page);
-  }
-
-  if (end < pages) {
-    if (end < pages - 1) addItem("…", page, true);
-    addItem(String(pages), pages, false, page === pages);
-  }
-
-  addItem("Next", page + 1, page >= pages);
+  $pagination.append(makeItem("Next", currentPage + 1, currentPage >= totalPages));
 }
 
-async function loadPosts(page = currentPage) {
+function updateFeedMeta() {
+  if (currentSearch) {
+    $("#feedMeta").text(`${totalPosts} matching post${totalPosts === 1 ? "" : "s"} for “${currentSearch}”`);
+  } else {
+    $("#feedMeta").text(`${totalPosts} post${totalPosts === 1 ? "" : "s"} saved`);
+  }
+}
+
+async function loadPosts(page = 1) {
+  currentPage = page;
+  currentSearch = $("#searchBox").val().trim();
   $("#loading").removeClass("d-none");
+  $("#postsList").empty();
   $("#emptyState").addClass("d-none");
-  setMessage("#formMessage", "", "muted");
 
   try {
-    const payload = await apiRequest(`/posts?page=${page}&limit=${PAGE_SIZE}`);
-    currentPage = payload.page;
-    totalPages = payload.total_pages;
+    const params = new URLSearchParams({ page: String(currentPage), limit: String(PAGE_SIZE) });
+    if (currentSearch) params.set("q", currentSearch);
+    const payload = await apiRequest(`/posts?${params.toString()}`);
+    totalPages = payload.total_pages || 1;
+    totalPosts = payload.total || 0;
+    currentPage = payload.page || currentPage;
     renderPosts(payload.posts || []);
-    renderPagination(currentPage, totalPages);
-    const total = payload.total || 0;
-    $("#feedMeta").text(total === 1 ? "1 post" : `${total} posts`);
+    renderPagination();
+    updateFeedMeta();
   } catch (error) {
-    $("#postsList").empty();
-    $("#pagination").empty();
-    $("#feedMeta").text("Unable to load posts");
     setMessage("#formMessage", error.message, "danger");
+    $("#feedMeta").text("Unable to load posts");
   } finally {
     $("#loading").addClass("d-none");
   }
 }
 
-function clearPostImage() {
+function resetComposer() {
+  $("#postContent").val("");
   $("#postImage").val("");
   $("#postImagePreview").addClass("d-none");
   $("#postImagePreviewImg").attr("src", "");
   $("#postImageInfo").text("");
-}
-
-function clearEditImage() {
-  $("#editImage").val("");
-  $("#editImagePreview").addClass("d-none");
-  $("#editImagePreviewImg").attr("src", "");
-  $("#editImageInfo").text("");
-}
-
-function resetComposer() {
-  $("#postForm")[0].reset();
-  clearPostImage();
   updateCounts();
 }
 
-function openEditModal(post) {
-  $("#editPostId").val(post._id);
-  $("#editContent").val(post.content || "");
-  $("#editRemoveImage").prop("checked", false);
+function postFromElement($item) {
+  return {
+    id: $item.data("id"),
+    content: $item.find(".post-content").text(),
+    imageSrc: $item.find(".post-image").attr("src") || ""
+  };
+}
+
+function openEditModal($item) {
+  const post = postFromElement($item);
+  $("#editPostId").val(post.id);
+  $("#editContent").val(post.content);
+  $("#editImage").val("");
+  $("#editRemoveImage").val("false");
+  $("#editImagePreview").addClass("d-none");
   setMessage("#editMessage", "", "muted");
-  clearEditImage();
 
-  if (post.image && post.image.data_uri) {
-    $("#existingImage").attr("src", post.image.data_uri);
-    $("#existingImageInfo").text(post.image.filename || "Attached image");
-    $("#existingImageWrap").removeClass("d-none");
+  if (post.imageSrc) {
+    $("#currentImage").attr("src", post.imageSrc);
+    $("#currentImageWrap").removeClass("d-none");
   } else {
-    $("#existingImage").attr("src", "");
-    $("#existingImageInfo").text("");
-    $("#existingImageWrap").addClass("d-none");
+    $("#currentImage").attr("src", "");
+    $("#currentImageWrap").addClass("d-none");
   }
-
   updateCounts();
   editModal.show();
 }
 
-function base64ToBlob(base64, mimeType) {
+function downloadBase64File(base64, filename, mimeType) {
   const binary = atob(base64);
-  const chunks = [];
-  for (let offset = 0; offset < binary.length; offset += 1024) {
-    const slice = binary.slice(offset, offset + 1024);
-    const bytes = new Uint8Array(slice.length);
-    for (let i = 0; i < slice.length; i += 1) {
-      bytes[i] = slice.charCodeAt(i);
-    }
-    chunks.push(bytes);
-  }
-  return new Blob(chunks, { type: mimeType || "application/octet-stream" });
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  const blob = new Blob([bytes], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
-async function exportFeed() {
-  const $button = $("#exportBtn");
-  $button.prop("disabled", true).text("Exporting...");
-  setMessage("#formMessage", "Preparing ZIP export...", "muted");
-
-  try {
-    const payload = await apiRequest("/export");
-    const blob = base64ToBlob(payload.data, payload.mime_type || "application/zip");
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = payload.filename || "personal-feed.zip";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    setMessage("#formMessage", `Exported ${payload.count || 0} posts.`, "success");
-  } catch (error) {
-    setMessage("#formMessage", error.message, "danger");
-  } finally {
-    $button.prop("disabled", false).text("Export ZIP");
-  }
-}
-
-$(function () {
+$(document).ready(() => {
   editModal = new bootstrap.Modal(document.getElementById("editModal"));
+  updateCounts();
+  loadPosts(1);
 
   $("#postContent, #editContent").on("input", updateCounts);
-  $("#postImage").on("change", () => setImagePreview("#postImage", "#postImagePreview", "#postImagePreviewImg", "#postImageInfo", "#formMessage"));
-  $("#editImage").on("change", () => setImagePreview("#editImage", "#editImagePreview", "#editImagePreviewImg", "#editImageInfo", "#editMessage"));
-  $("#clearPostImage").on("click", clearPostImage);
-  $("#clearEditImage").on("click", clearEditImage);
-  $("#refreshBtn").on("click", () => loadPosts(currentPage));
-  $("#exportBtn").on("click", exportFeed);
 
-  $("#postForm").on("submit", async function (event) {
-    event.preventDefault();
-    const content = $("#postContent").val().trim();
-    if (!content) {
-      setMessage("#formMessage", "Please write some text for your post.", "danger");
-      return;
+  $("#searchBox").on("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadPosts(1), 250);
+  });
+
+  $("#postImage").on("change", () => {
+    setImagePreview("#postImage", "#postImagePreview", "#postImagePreviewImg", "#postImageInfo", "#formMessage");
+  });
+
+  $("#editImage").on("change", () => {
+    setImagePreview("#editImage", "#editImagePreview", "#editImagePreviewImg", "#editImageInfo", "#editMessage");
+    if ($("#editImage")[0].files.length) {
+      $("#editRemoveImage").val("false");
     }
+  });
 
-    const $button = $("#submitBtn");
-    $button.prop("disabled", true).text("Submitting...");
+  $("#clearPostImage").on("click", () => {
+    $("#postImage").val("");
+    $("#postImagePreview").addClass("d-none");
     setMessage("#formMessage", "", "muted");
+  });
+
+  $("#clearEditImage").on("click", () => {
+    $("#editImage").val("");
+    $("#editImagePreview").addClass("d-none");
+  });
+
+  $("#removeCurrentImage").on("click", () => {
+    $("#editRemoveImage").val("true");
+    $("#currentImageWrap").addClass("d-none");
+    $("#editImage").val("");
+    $("#editImagePreview").addClass("d-none");
+    setMessage("#editMessage", "Current image will be removed when you save.", "muted");
+  });
+
+  $("#postForm").on("submit", async (event) => {
+    event.preventDefault();
+    setMessage("#formMessage", "", "muted");
+    $("#submitBtn").prop("disabled", true).text("Submitting...");
 
     try {
       const image = await buildImagePayload($("#postImage")[0]);
-      const body = { content };
-      if (image) body.image = image;
       await apiRequest("/posts", {
         method: "POST",
-        body: JSON.stringify(body)
+        body: JSON.stringify({ content: $("#postContent").val(), image })
       });
       resetComposer();
       setMessage("#formMessage", "Post saved.", "success");
-      await loadPosts(1);
+      loadPosts(1);
     } catch (error) {
       setMessage("#formMessage", error.message, "danger");
     } finally {
-      $button.prop("disabled", false).text("Submit Post");
+      $("#submitBtn").prop("disabled", false).text("Submit Post");
     }
   });
 
   $("#postsList").on("click", ".edit-post", function () {
-    const post = $(this).closest(".post-item").data("post");
-    openEditModal(post);
+    openEditModal($(this).closest(".post-item"));
   });
 
   $("#postsList").on("click", ".delete-post", async function () {
     const $item = $(this).closest(".post-item");
-    const post = $item.data("post");
+    const id = $item.data("id");
     if (!confirm("Delete this post?")) return;
 
     try {
-      await apiRequest(`/posts/${post._id}`, { method: "DELETE" });
-      setMessage("#formMessage", "Post deleted.", "success");
-      await loadPosts(currentPage);
+      await apiRequest(`/posts/${id}`, { method: "DELETE" });
+      loadPosts(currentPage);
     } catch (error) {
       setMessage("#formMessage", error.message, "danger");
     }
   });
 
-  $("#editForm").on("submit", async function (event) {
+  $("#editForm").on("submit", async (event) => {
     event.preventDefault();
-    const id = $("#editPostId").val();
-    const content = $("#editContent").val().trim();
-    if (!content) {
-      setMessage("#editMessage", "Content cannot be empty.", "danger");
-      return;
-    }
-
-    const $button = $("#saveEditBtn");
-    $button.prop("disabled", true).text("Saving...");
+    setMessage("#editMessage", "", "muted");
+    $("#saveEditBtn").prop("disabled", true).text("Saving...");
 
     try {
+      const id = $("#editPostId").val();
       const image = await buildImagePayload($("#editImage")[0]);
-      const body = {
-        content,
-        remove_image: $("#editRemoveImage").is(":checked")
+      const payload = {
+        content: $("#editContent").val(),
+        remove_image: $("#editRemoveImage").val() === "true"
       };
-      if (image) {
-        body.image = image;
-        body.remove_image = false;
-      }
+      if (image) payload.image = image;
+
       await apiRequest(`/posts/${id}`, {
         method: "PUT",
-        body: JSON.stringify(body)
+        body: JSON.stringify(payload)
       });
       editModal.hide();
-      setMessage("#formMessage", "Post updated.", "success");
-      await loadPosts(currentPage);
+      loadPosts(currentPage);
     } catch (error) {
       setMessage("#editMessage", error.message, "danger");
     } finally {
-      $button.prop("disabled", false).text("Save Changes");
+      $("#saveEditBtn").prop("disabled", false).text("Save changes");
     }
   });
 
-  updateCounts();
-  loadPosts(1);
+  $("#pagination").on("click", ".page-link", function () {
+    const page = Number($(this).data("page"));
+    if (page && page !== currentPage && page >= 1 && page <= totalPages) loadPosts(page);
+  });
+
+  $("#refreshBtn").on("click", () => loadPosts(currentPage));
+
+  $("#exportBtn").on("click", async () => {
+    $("#exportBtn").prop("disabled", true).text("Exporting...");
+    try {
+      const payload = await apiRequest("/export");
+      downloadBase64File(payload.zip_base64, payload.filename || "personal-feed-export.zip", "application/zip");
+    } catch (error) {
+      setMessage("#formMessage", error.message, "danger");
+    } finally {
+      $("#exportBtn").prop("disabled", false).text("Export ZIP");
+    }
+  });
 });
