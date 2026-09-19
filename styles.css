@@ -13,7 +13,7 @@ body {
 }
 
 .search-box-wrap {
-  width: min(260px, 48vw);
+  width: min(320px, 48vw);
 }
 
 #searchBox {
@@ -74,6 +74,29 @@ body {
 
 .post-image {
   object-fit: contain;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.tag-chip {
+  border: 0;
+  border-radius: 999px;
+  background: #e7f1ff;
+  color: #084298;
+  font-size: 0.82rem;
+  line-height: 1;
+  padding: 0.35rem 0.6rem;
+  text-decoration: none;
+}
+
+button.tag-chip:hover,
+a.tag-chip:hover {
+  background: #cfe2ff;
+  color: #052c65;
 }
 
 #formMessage.text-danger,
