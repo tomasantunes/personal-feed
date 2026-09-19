@@ -1,114 +1,74 @@
-const API_BASE = "/api/apps/personal-feed";
+const API_BASE = '/api/apps/personal-feed';
 const PAGE_SIZE = 8;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 let currentPage = 1;
 let totalPages = 1;
-let totalPosts = 0;
-let editModal;
-let searchTimer;
-let currentSearch = "";
-let editRemoveImage = false;
+let currentSearch = '';
 let postsById = {};
+let editModal;
+let editRemoveImage = false;
+let searchTimer;
 
 function escapeHtml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+  return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
 function formatDate(value) {
-  if (!value) return "Unknown date";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit"
-  });
-}
-
-function setMessage(selector, message, type) {
-  const $el = $(selector);
-  $el.removeClass("text-danger text-success text-muted");
-  if (!message) {
-    $el.text("");
-    return;
-  }
-  $el.addClass(type === "success" ? "text-success" : type === "muted" ? "text-muted" : "text-danger");
-  $el.text(message);
-}
-
-function updateCounts() {
-  $("#charCount").text(`${$("#postContent").val().length} / 5000`);
-  $("#editCharCount").text(`${$("#editContent").val().length} / 5000`);
-}
-
-function parseTags(value) {
-  return String(value || "")
-    .split(/[\s,]+/)
-    .map(tag => tag.trim().replace(/^#+/, "").toLowerCase())
-    .filter(Boolean)
-    .filter((tag, index, arr) => arr.indexOf(tag) === index);
-}
-
-function tagsToInput(tags) {
-  return Array.isArray(tags) ? tags.join(", ") : "";
+  if (!value || Number.isNaN(date.getTime())) return 'Unknown date';
+  return date.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 function formatFileSize(bytes) {
-  if (!bytes) return "0 bytes";
+  if (!bytes) return '0 bytes';
   if (bytes < 1024) return `${bytes} bytes`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function setMessage(selector, message, type = 'danger') {
+  const el = $(selector);
+  el.removeClass('text-danger text-success text-muted');
+  if (!message) return el.text('');
+  el.addClass(type === 'success' ? 'text-success' : type === 'muted' ? 'text-muted' : 'text-danger').text(message);
+}
+
+function parseTags(value) {
+  return String(value || '').split(/[\s,]+/).map(t => t.trim().replace(/^#+/, '').toLowerCase()).filter(Boolean).filter((t, i, a) => a.indexOf(t) === i);
+}
+
+function tagsToInput(tags) {
+  return Array.isArray(tags) ? tags.join(', ') : '';
+}
+
+function updateCounts() {
+  $('#charCount').text(`${$('#postContent').val().length} / 5000`);
+  $('#editCharCount').text(`${$('#editContent').val().length} / 5000`);
+}
+
 async function apiRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    },
-    ...options
-  });
-
+  const response = await fetch(`${API_BASE}${path}`, { headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
   let payload;
-  try {
-    payload = await response.json();
-  } catch (error) {
-    payload = { ok: false, error: "Invalid server response" };
-  }
-
-  if (!response.ok || payload.ok === false) {
-    throw new Error(payload.error || `Request failed (${response.status})`);
-  }
-
+  try { payload = await response.json(); } catch { payload = { ok: false, error: 'Invalid server response' }; }
+  if (!response.ok || payload.ok === false) throw new Error(payload.error || `Request failed (${response.status})`);
   return payload;
+}
+
+function validateImageFile(file) {
+  if (!file) return;
+  if (!ALLOWED_IMAGE_TYPES.includes(file.type)) throw new Error('Please choose a JPEG, PNG, GIF, or WebP image.');
+  if (file.size > MAX_IMAGE_BYTES) throw new Error('Image must be 5 MB or smaller.');
 }
 
 function readFileAsDataURL(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("Unable to read image file"));
+    reader.onerror = () => reject(new Error('Unable to read image file'));
     reader.readAsDataURL(file);
   });
-}
-
-function validateImageFile(file) {
-  if (!file) return;
-  if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
-    throw new Error("Please choose a JPEG, PNG, GIF, or WebP image.");
-  }
-  if (file.size > MAX_IMAGE_BYTES) {
-    throw new Error("Image must be 5 MB or smaller.");
-  }
 }
 
 async function buildImagePayload(inputEl) {
@@ -116,310 +76,212 @@ async function buildImagePayload(inputEl) {
   if (!file) return null;
   validateImageFile(file);
   const dataUrl = await readFileAsDataURL(file);
-  return {
-    filename: file.name,
-    mime_type: file.type,
-    data: String(dataUrl).split(",")[1]
-  };
+  return { filename: file.name, mime_type: file.type, data: String(dataUrl).split(',')[1] };
 }
 
-function setImagePreview(fileInputSelector, previewSelector, imgSelector, infoSelector, messageSelector) {
-  const input = $(fileInputSelector)[0];
-  const file = input && input.files && input.files[0];
-  const $preview = $(previewSelector);
-
+function previewImage(inputSelector, wrapSelector, imgSelector, infoSelector, messageSelector) {
+  const input = $(inputSelector)[0];
+  const file = input?.files?.[0];
   if (!file) {
-    $preview.addClass("d-none");
-    $(imgSelector).attr("src", "");
-    $(infoSelector).text("");
+    $(wrapSelector).addClass('d-none');
+    $(imgSelector).attr('src', '');
+    $(infoSelector).text('');
     return;
   }
-
   try {
     validateImageFile(file);
-    const url = URL.createObjectURL(file);
-    $(imgSelector).attr("src", url);
+    $(imgSelector).attr('src', URL.createObjectURL(file));
     $(infoSelector).text(`${file.name} • ${formatFileSize(file.size)}`);
-    $preview.removeClass("d-none");
-    if (messageSelector) setMessage(messageSelector, "", "muted");
-  } catch (error) {
-    input.value = "";
-    $preview.addClass("d-none");
-    if (messageSelector) setMessage(messageSelector, error.message, "danger");
+    $(wrapSelector).removeClass('d-none');
+    if (messageSelector) setMessage(messageSelector, '', 'muted');
+  } catch (err) {
+    input.value = '';
+    $(wrapSelector).addClass('d-none');
+    if (messageSelector) setMessage(messageSelector, err.message);
   }
 }
 
 function renderTags(tags) {
-  if (!Array.isArray(tags) || !tags.length) return "";
-  return `<div class="tag-list mt-3">${tags.map(tag => (
-    `<button class="tag-chip search-tag" type="button" data-tag="${escapeHtml(tag)}">#${escapeHtml(tag)}</button>`
-  )).join("")}</div>`;
+  if (!Array.isArray(tags) || !tags.length) return '';
+  return `<div class='tag-list mt-2'>${tags.map(tag => `<button type='button' class='tag-chip' data-tag='${escapeHtml(tag)}'>#${escapeHtml(tag)}</button>`).join('')}</div>`;
 }
 
-function renderPosts(posts) {
-  postsById = {};
-  const $list = $("#postsList").empty();
-
-  if (!posts.length) {
-    $("#emptyText").text(currentSearch ? "No posts match your search." : "Create your first post using the textarea above.");
-    $("#emptyState").removeClass("d-none");
-    return;
-  }
-
-  $("#emptyState").addClass("d-none");
-
-  posts.forEach(post => {
-    postsById[post._id] = post;
-    const updated = post.updated_at && post.updated_at !== post.created_at ? ` • Edited ${formatDate(post.updated_at)}` : "";
-    const imageHtml = post.image && post.image.data_uri
-      ? `<div class="post-image-wrap mt-3"><img class="post-image" src="${post.image.data_uri}" alt="Attached image from post"></div>`
-      : "";
-
-    $list.append(`
-      <article class="list-group-item post-item p-4" data-id="${escapeHtml(post._id)}">
-        <div class="d-flex flex-wrap justify-content-between gap-2">
-          <div class="post-date text-muted">${formatDate(post.created_at)}${updated}</div>
-          <div class="post-actions d-flex gap-2">
-            <button type="button" class="btn btn-outline-primary btn-sm edit-post" data-id="${escapeHtml(post._id)}">Edit</button>
-            <button type="button" class="btn btn-outline-danger btn-sm delete-post" data-id="${escapeHtml(post._id)}">Delete</button>
-          </div>
-        </div>
-        <div class="post-content mt-2">${escapeHtml(post.content)}</div>
-        ${imageHtml}
+function renderPost(post) {
+  const image = post.image && post.image.data_uri ? `<div class='post-image-wrap mt-3'><img class='post-image' src='${post.image.data_uri}' alt='Image attached to post'></div>` : '';
+  return `<article class='list-group-item post-item p-3' data-id='${escapeHtml(post._id)}'>
+    <div class='d-flex flex-wrap justify-content-between gap-2'>
+      <div class='min-width-0 flex-grow-1'>
+        <div class='post-content'>${escapeHtml(post.content)}</div>
+        ${image}
         ${renderTags(post.tags)}
-      </article>
-    `);
-  });
+        <div class='post-date text-muted mt-2'>Created ${formatDate(post.created_at)}${post.updated_at && post.updated_at !== post.created_at ? ` • Updated ${formatDate(post.updated_at)}` : ''}</div>
+      </div>
+      <div class='post-actions d-flex gap-2 align-self-start'>
+        <button type='button' class='btn btn-outline-primary btn-sm edit-post'>Edit</button>
+        <button type='button' class='btn btn-outline-danger btn-sm delete-post'>Delete</button>
+      </div>
+    </div>
+  </article>`;
 }
 
 function renderPagination() {
-  const $pagination = $("#pagination").empty();
+  const el = $('#pagination').empty();
   if (totalPages <= 1) return;
-
-  const addItem = (label, page, disabled = false, active = false) => {
-    $pagination.append(`
-      <li class="page-item ${disabled ? "disabled" : ""} ${active ? "active" : ""}">
-        <button class="page-link" type="button" data-page="${page}" ${disabled ? "disabled" : ""}>${label}</button>
-      </li>
-    `);
-  };
-
-  addItem("Previous", Math.max(1, currentPage - 1), currentPage === 1);
+  const item = (page, label, disabled, active) => `<li class='page-item ${disabled ? 'disabled' : ''} ${active ? 'active' : ''}'><button class='page-link' data-page='${page}' type='button'>${label}</button></li>`;
+  el.append(item(currentPage - 1, 'Prev', currentPage <= 1, false));
   const start = Math.max(1, currentPage - 2);
   const end = Math.min(totalPages, currentPage + 2);
-  for (let page = start; page <= end; page += 1) {
-    addItem(String(page), page, false, page === currentPage);
-  }
-  addItem("Next", Math.min(totalPages, currentPage + 1), currentPage === totalPages);
-}
-
-function updateFeedMeta() {
-  const searchPart = currentSearch ? ` matching “${currentSearch}”` : "";
-  $("#feedMeta").text(`${totalPosts} post${totalPosts === 1 ? "" : "s"}${searchPart}`);
+  for (let p = start; p <= end; p++) el.append(item(p, p, false, p === currentPage));
+  el.append(item(currentPage + 1, 'Next', currentPage >= totalPages, false));
 }
 
 async function loadPosts(page = 1) {
   currentPage = page;
-  $("#loading").removeClass("d-none");
-  $("#postsList").empty();
-  $("#emptyState").addClass("d-none");
-
+  $('#loading').removeClass('d-none');
+  $('#postsList').empty();
+  $('#emptyState').addClass('d-none');
   try {
-    const params = new URLSearchParams({ page: String(currentPage), limit: String(PAGE_SIZE) });
-    if (currentSearch) params.set("q", currentSearch);
-    const payload = await apiRequest(`/posts?${params.toString()}`);
-    totalPages = payload.pages || 1;
-    totalPosts = payload.total || 0;
-    currentPage = payload.page || 1;
-    renderPosts(payload.posts || []);
+    const q = encodeURIComponent(currentSearch);
+    const payload = await apiRequest(`/posts?page=${currentPage}&limit=${PAGE_SIZE}&q=${q}`);
+    currentPage = payload.page;
+    totalPages = payload.total_pages;
+    postsById = {};
+    payload.posts.forEach(post => { postsById[post._id] = post; });
+    $('#postsList').html(payload.posts.map(renderPost).join(''));
+    $('#feedMeta').text(payload.total ? `${payload.total} post${payload.total === 1 ? '' : 's'}${currentSearch ? ` matching “${currentSearch}”` : ''}` : 'No posts yet');
+    if (!payload.posts.length) {
+      $('#emptyText').text(currentSearch ? 'No posts match your search.' : 'Create your first post using the textarea above.');
+      $('#emptyState').removeClass('d-none');
+    }
     renderPagination();
-    updateFeedMeta();
-  } catch (error) {
-    setMessage("#formMessage", error.message, "danger");
-    $("#feedMeta").text("Unable to load posts");
+  } catch (err) {
+    $('#feedMeta').text('Unable to load posts');
+    $('#emptyText').text(err.message);
+    $('#emptyState').removeClass('d-none');
   } finally {
-    $("#loading").addClass("d-none");
+    $('#loading').addClass('d-none');
   }
 }
 
 function resetComposer() {
-  $("#postContent").val("");
-  $("#postTags").val("");
-  $("#postImage").val("");
-  $("#postImagePreview").addClass("d-none");
-  $("#postImagePreviewImg").attr("src", "");
-  $("#postImageInfo").text("");
+  $('#postForm')[0].reset();
+  $('#postImagePreview').addClass('d-none');
+  $('#postImagePreviewImg').attr('src', '');
+  $('#postImageInfo').text('');
   updateCounts();
 }
 
-function openEditModal(id) {
+async function submitPost(event) {
+  event.preventDefault();
+  setMessage('#formMessage', '', 'muted');
+  $('#submitBtn').prop('disabled', true).text('Saving...');
+  try {
+    const image = await buildImagePayload($('#postImage')[0]);
+    await apiRequest('/posts', { method: 'POST', body: JSON.stringify({ content: $('#postContent').val(), tags: parseTags($('#postTags').val()), image }) });
+    resetComposer();
+    setMessage('#formMessage', 'Post saved.', 'success');
+    currentSearch = '';
+    $('#searchBox').val('');
+    await loadPosts(1);
+  } catch (err) {
+    setMessage('#formMessage', err.message);
+  } finally {
+    $('#submitBtn').prop('disabled', false).text('Submit Post');
+  }
+}
+
+function openEdit(id) {
   const post = postsById[id];
   if (!post) return;
   editRemoveImage = false;
-  $("#editId").val(post._id);
-  $("#editContent").val(post.content || "");
-  $("#editTags").val(tagsToInput(post.tags));
-  $("#editImage").val("");
-  $("#editImagePreview").addClass("d-none");
-  setMessage("#editMessage", "", "muted");
-
+  $('#editId').val(post._id);
+  $('#editContent').val(post.content);
+  $('#editTags').val(tagsToInput(post.tags));
+  $('#editImage').val('');
+  $('#editImagePreview').addClass('d-none');
+  $('#editMessage').text('');
   if (post.image && post.image.data_uri) {
-    $("#currentImageImg").attr("src", post.image.data_uri);
-    $("#currentImageBox").removeClass("d-none");
-    $("#removeCurrentImage").text("Remove current image").prop("disabled", false);
+    $('#currentImage').attr('src', post.image.data_uri);
+    $('#currentImageWrap').removeClass('d-none');
+    $('#removeCurrentImage').text('Remove current image').prop('disabled', false);
   } else {
-    $("#currentImageBox").addClass("d-none");
-    $("#currentImageImg").attr("src", "");
+    $('#currentImageWrap').addClass('d-none');
   }
-
   updateCounts();
   editModal.show();
 }
 
-async function deletePost(id) {
-  if (!confirm("Delete this post? This cannot be undone.")) return;
+async function saveEdit(event) {
+  event.preventDefault();
+  const id = $('#editId').val();
+  $('#saveEditBtn').prop('disabled', true).text('Saving...');
+  setMessage('#editMessage', '', 'muted');
   try {
-    await apiRequest(`/posts/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const image = await buildImagePayload($('#editImage')[0]);
+    await apiRequest(`/posts/${id}`, { method: 'PUT', body: JSON.stringify({ content: $('#editContent').val(), tags: parseTags($('#editTags').val()), image, remove_image: editRemoveImage }) });
+    editModal.hide();
     await loadPosts(currentPage);
-  } catch (error) {
-    alert(error.message);
-  }
-}
-
-function base64ToBlob(base64, mimeType) {
-  const binary = atob(base64);
-  const chunks = [];
-  const chunkSize = 8192;
-  for (let i = 0; i < binary.length; i += chunkSize) {
-    const slice = binary.slice(i, i + chunkSize);
-    const bytes = new Uint8Array(slice.length);
-    for (let j = 0; j < slice.length; j += 1) bytes[j] = slice.charCodeAt(j);
-    chunks.push(bytes);
-  }
-  return new Blob(chunks, { type: mimeType || "application/zip" });
-}
-
-async function exportFeed() {
-  const $btn = $("#exportBtn");
-  const oldText = $btn.text();
-  $btn.prop("disabled", true).text("Exporting...");
-  try {
-    const params = new URLSearchParams();
-    if (currentSearch) params.set("q", currentSearch);
-    const payload = await apiRequest(`/export${params.toString() ? `?${params.toString()}` : ""}`);
-    const blob = base64ToBlob(payload.data, payload.mime_type || "application/zip");
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = payload.filename || "personal-feed-export.zip";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  } catch (error) {
-    alert(error.message);
+  } catch (err) {
+    setMessage('#editMessage', err.message);
   } finally {
-    $btn.prop("disabled", false).text(oldText);
+    $('#saveEditBtn').prop('disabled', false).text('Save changes');
+  }
+}
+
+async function deletePost(id) {
+  if (!confirm('Delete this post? This cannot be undone.')) return;
+  try {
+    await apiRequest(`/posts/${id}`, { method: 'DELETE' });
+    await loadPosts(currentPage);
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function downloadBase64File(filename, mimeType, base64Data) {
+  const binary = atob(base64Data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const blob = new Blob([bytes], { type: mimeType || 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'personal-feed-export.zip';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function exportZip() {
+  $('#exportBtn').prop('disabled', true).text('Exporting...');
+  try {
+    const payload = await apiRequest('/export');
+    downloadBase64File(payload.filename, payload.mime_type, payload.data);
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    $('#exportBtn').prop('disabled', false).text('Export ZIP');
   }
 }
 
 $(function () {
-  editModal = new bootstrap.Modal(document.getElementById("editModal"));
-
-  $("#postContent, #editContent").on("input", updateCounts);
-  $("#postImage").on("change", () => setImagePreview("#postImage", "#postImagePreview", "#postImagePreviewImg", "#postImageInfo", "#formMessage"));
-  $("#editImage").on("change", () => {
-    editRemoveImage = false;
-    setImagePreview("#editImage", "#editImagePreview", "#editImagePreviewImg", "#editImageInfo", "#editMessage");
-  });
-
-  $("#clearPostImage").on("click", () => {
-    $("#postImage").val("");
-    $("#postImagePreview").addClass("d-none");
-  });
-
-  $("#clearEditImage").on("click", () => {
-    $("#editImage").val("");
-    $("#editImagePreview").addClass("d-none");
-  });
-
-  $("#removeCurrentImage").on("click", () => {
-    editRemoveImage = true;
-    $("#currentImageBox").addClass("d-none");
-    setMessage("#editMessage", "Current image will be removed when you save.", "muted");
-  });
-
-  $("#postForm").on("submit", async function (event) {
-    event.preventDefault();
-    setMessage("#formMessage", "Saving...", "muted");
-    $("#submitBtn").prop("disabled", true);
-    try {
-      const image = await buildImagePayload($("#postImage")[0]);
-      await apiRequest("/posts", {
-        method: "POST",
-        body: JSON.stringify({
-          content: $("#postContent").val(),
-          tags: parseTags($("#postTags").val()),
-          image
-        })
-      });
-      resetComposer();
-      setMessage("#formMessage", "Post saved.", "success");
-      await loadPosts(1);
-    } catch (error) {
-      setMessage("#formMessage", error.message, "danger");
-    } finally {
-      $("#submitBtn").prop("disabled", false);
-    }
-  });
-
-  $("#editForm").on("submit", async function (event) {
-    event.preventDefault();
-    const id = $("#editId").val();
-    setMessage("#editMessage", "Saving...", "muted");
-    $("#saveEditBtn").prop("disabled", true);
-    try {
-      const image = await buildImagePayload($("#editImage")[0]);
-      const body = {
-        content: $("#editContent").val(),
-        tags: parseTags($("#editTags").val()),
-        remove_image: editRemoveImage
-      };
-      if (image) body.image = image;
-      await apiRequest(`/posts/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
-      editModal.hide();
-      await loadPosts(currentPage);
-    } catch (error) {
-      setMessage("#editMessage", error.message, "danger");
-    } finally {
-      $("#saveEditBtn").prop("disabled", false);
-    }
-  });
-
-  $("#postsList").on("click", ".edit-post", function () { openEditModal($(this).data("id")); });
-  $("#postsList").on("click", ".delete-post", function () { deletePost($(this).data("id")); });
-  $("#postsList").on("click", ".search-tag", function () {
-    currentSearch = `#${$(this).data("tag")}`;
-    $("#searchBox").val(currentSearch);
-    loadPosts(1);
-  });
-
-  $("#pagination").on("click", ".page-link", function () {
-    const page = Number($(this).data("page"));
-    if (page && page !== currentPage) loadPosts(page);
-  });
-
-  $("#searchBox").on("input", function () {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-      currentSearch = $("#searchBox").val().trim();
-      loadPosts(1);
-    }, 250);
-  });
-
-  $("#refreshBtn").on("click", () => loadPosts(currentPage));
-  $("#exportBtn").on("click", exportFeed);
-
+  editModal = new bootstrap.Modal(document.getElementById('editModal'));
+  $('#postContent, #editContent').on('input', updateCounts);
+  $('#postForm').on('submit', submitPost);
+  $('#editForm').on('submit', saveEdit);
+  $('#postImage').on('change', () => previewImage('#postImage', '#postImagePreview', '#postImagePreviewImg', '#postImageInfo', '#formMessage'));
+  $('#editImage').on('change', () => { editRemoveImage = false; previewImage('#editImage', '#editImagePreview', '#editImagePreviewImg', '#editImageInfo', '#editMessage'); });
+  $('#clearPostImage').on('click', () => { $('#postImage').val(''); previewImage('#postImage', '#postImagePreview', '#postImagePreviewImg', '#postImageInfo'); });
+  $('#clearEditImage').on('click', () => { $('#editImage').val(''); previewImage('#editImage', '#editImagePreview', '#editImagePreviewImg', '#editImageInfo'); });
+  $('#removeCurrentImage').on('click', function () { editRemoveImage = true; $('#currentImageWrap').addClass('d-none'); $('#editImage').val(''); $('#editImagePreview').addClass('d-none'); });
+  $('#refreshBtn').on('click', () => loadPosts(currentPage));
+  $('#exportBtn').on('click', exportZip);
+  $('#searchBox').on('input', function () { clearTimeout(searchTimer); searchTimer = setTimeout(() => { currentSearch = $(this).val().trim(); loadPosts(1); }, 250); });
+  $('#postsList').on('click', '.edit-post', function () { openEdit($(this).closest('.post-item').data('id')); });
+  $('#postsList').on('click', '.delete-post', function () { deletePost($(this).closest('.post-item').data('id')); });
+  $('#postsList').on('click', '.tag-chip', function () { currentSearch = `#${$(this).data('tag')}`; $('#searchBox').val(currentSearch); loadPosts(1); });
+  $('#pagination').on('click', '.page-link', function () { const page = Number($(this).data('page')); if (page >= 1 && page <= totalPages && page !== currentPage) loadPosts(page); });
   updateCounts();
   loadPosts(1);
 });
