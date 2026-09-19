@@ -2,11 +2,12 @@ from datetime import datetime, timezone
 import base64
 import io
 import json
+import math
 import re
 import zipfile
 from bson import ObjectId
 from bson.errors import InvalidId
-from pymongo import ReturnDocument
+from pymongo import DESCENDING, ReturnDocument
 
 COLLECTION_NAME = "personal_feed_posts"
 MAX_CONTENT_LENGTH = 5000
@@ -48,25 +49,6 @@ def _serialize_post(post, include_image=True):
         "updated_at": _serialize_datetime(post.get("updated_at")),
         "image": serialized_image,
         "has_image": bool(serialized_image),
-    }
-
-
-def _serialize_post_for_json_export(post):
-    image = post.get("image") or None
-    image_meta = None
-    if isinstance(image, dict) and image.get("data") and image.get("mime_type"):
-        image_meta = {
-            "filename": image.get("filename") or "image",
-            "mime_type": image.get("mime_type"),
-        }
-    return {
-        "id": str(post.get("_id")),
-        "content": post.get("content", ""),
-        "tags": post.get("tags", []) if isinstance(post.get("tags"), list) else [],
-        "created_at": _serialize_datetime(post.get("created_at")),
-        "updated_at": _serialize_datetime(post.get("updated_at")),
-        "has_image": bool(image_meta),
-        "image": image_meta,
     }
 
 
@@ -137,229 +119,308 @@ def _normalize_tags(raw_tags):
     elif isinstance(raw_tags, list):
         candidates = raw_tags
     else:
-        return None, "Tags must be a list or text"
+        return []
 
     tags = []
-    for candidate in candidates:
-        if not isinstance(candidate, str):
-            return None, "Each tag must be text"
-        tag = candidate.strip().lstrip("#").lower()
+    seen = set()
+    for raw in candidates:
+        tag = str(raw or "").strip().lstrip("#").lower()
+        tag = re.sub(r"[^a-z0-9_-]", "", tag)
         if not tag:
             continue
-        if not re.match(r"^[a-z0-9][a-z0-9_-]*$", tag):
-            return None, "Tags may contain only letters, numbers, dashes, and underscores"
-        if len(tag) > MAX_TAG_LENGTH:
-            return None, f"Tags must be {MAX_TAG_LENGTH} characters or fewer"
-        if tag not in tags:
+        tag = tag[:MAX_TAG_LENGTH]
+        if tag not in seen:
+            seen.add(tag)
             tags.append(tag)
-    if len(tags) > MAX_TAGS:
-        return None, f"Use {MAX_TAGS} tags or fewer"
-    return tags, None
+        if len(tags) >= MAX_TAGS:
+            break
+    return tags
 
 
-def _safe_filename(filename, fallback="image"):
-    filename = filename or fallback
-    filename = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._")
-    return filename or fallback
+def _sanitize_filename(filename):
+    filename = str(filename or "image").strip().replace("\\", "_").replace("/", "_")
+    filename = re.sub(r"[^A-Za-z0-9._ -]", "_", filename)
+    filename = filename.strip(" .") or "image"
+    return filename[:120]
 
 
-def _validate_image_payload(image):
-    if image in (None, ""):
+def _image_extension(mime_type):
+    return {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+    }.get(mime_type, "")
+
+
+def _validate_image(raw_image):
+    if raw_image in (None, ""):
         return None, None
-    if not isinstance(image, dict):
+    if not isinstance(raw_image, dict):
         return None, "Image must be an object"
-    mime_type = image.get("mime_type")
+
+    mime_type = raw_image.get("mime_type") or raw_image.get("type")
     if mime_type not in ALLOWED_IMAGE_TYPES:
         return None, "Image must be JPEG, PNG, GIF, or WebP"
-    data = image.get("data")
+
+    data = raw_image.get("data") or ""
+    if isinstance(data, str) and data.startswith("data:"):
+        data = data.split(",", 1)[-1]
     if not isinstance(data, str) or not data:
         return None, "Image data is required"
+
     try:
-        raw = base64.b64decode(data, validate=True)
+        decoded = base64.b64decode(data, validate=True)
     except Exception:
         return None, "Image data is not valid base64"
-    if len(raw) > MAX_IMAGE_BYTES:
+
+    if len(decoded) > MAX_IMAGE_BYTES:
         return None, "Image must be 5 MB or smaller"
+
+    filename = _sanitize_filename(raw_image.get("filename") or "image" + _image_extension(mime_type))
+    if "." not in filename and _image_extension(mime_type):
+        filename += _image_extension(mime_type)
+
     return {
-        "filename": _safe_filename(image.get("filename")),
+        "filename": filename,
         "mime_type": mime_type,
-        "data": base64.b64encode(raw).decode("ascii"),
-        "size": len(raw),
+        "data": base64.b64encode(decoded).decode("ascii"),
+        "size": len(decoded),
     }, None
 
 
-def _build_search_filter(search):
-    search = (search or "").strip()
-    if not search:
-        return {}
+def _build_filter(query):
+    q = str(_get_query_value(query, "q", "") or "").strip()
+    if not q:
+        return {}, ""
 
-    terms = [term.strip() for term in re.split(r"[\s,]+", search) if term.strip()]
-    tag_terms = []
-    plain_terms = []
-    for term in terms:
-        if term.startswith("#"):
-            tag_terms.append(term.lstrip("#").lower())
-        elif term.lower().startswith("tag:"):
-            tag_terms.append(term.split(":", 1)[1].lstrip("#").lower())
-        else:
-            plain_terms.append(term)
+    term = q[1:].strip().lower() if q.startswith("#") else q
+    if q.startswith("#"):
+        return {"tags": term}, q
 
-    clauses = []
-    for tag in tag_terms:
-        if tag:
-            clauses.append({"tags": tag})
-    for term in plain_terms:
-        escaped = re.escape(term)
-        clauses.append({"content": {"$regex": escaped, "$options": "i"}})
-        clauses.append({"tags": {"$regex": escaped, "$options": "i"}})
-
-    if not clauses:
-        return {}
-    return {"$or": clauses}
+    safe = re.escape(term)
+    return {
+        "$or": [
+            {"content": {"$regex": safe, "$options": "i"}},
+            {"tags": {"$regex": safe, "$options": "i"}},
+        ]
+    }, q
 
 
-def _posts_collection(db):
-    collection = db[COLLECTION_NAME]
-    collection.create_index([("created_at", -1)])
-    collection.create_index("tags")
-    return collection
+def _ensure_indexes(collection):
+    try:
+        collection.create_index([("created_at", DESCENDING)])
+        collection.create_index("tags")
+    except Exception:
+        pass
 
 
-def _list_posts(db, query):
-    collection = _posts_collection(db)
+def _list_posts(collection, query):
     page = _parse_positive_int(_get_query_value(query, "page", 1), 1)
     limit = _parse_positive_int(_get_query_value(query, "limit", DEFAULT_LIMIT), DEFAULT_LIMIT, maximum=MAX_LIMIT)
-    search = str(_get_query_value(query, "q", "") or "").strip()
-    filter_doc = _build_search_filter(search)
-    total = collection.count_documents(filter_doc)
-    total_pages = max(1, (total + limit - 1) // limit)
-    page = min(page, total_pages)
-    posts = list(collection.find(filter_doc).sort("created_at", -1).skip((page - 1) * limit).limit(limit))
+    filt, q = _build_filter(query)
+    total = collection.count_documents(filt)
+    pages = max(1, int(math.ceil(total / float(limit))))
+    page = min(page, pages)
+    skip = (page - 1) * limit
+    docs = list(collection.find(filt).sort("created_at", DESCENDING).skip(skip).limit(limit))
     return {
         "ok": True,
-        "posts": [_serialize_post(post) for post in posts],
+        "posts": [_serialize_post(doc, include_image=True) for doc in docs],
         "page": page,
         "limit": limit,
         "total": total,
-        "total_pages": total_pages,
+        "pages": pages,
+        "q": q,
     }
 
 
-def _create_post(db, data):
+def _create_post(collection, data):
     content, error = _validate_content(data)
     if error:
         return _json_error(error)
-    tags, tag_error = _normalize_tags(data.get("tags"))
-    if tag_error:
-        return _json_error(tag_error)
-    image, image_error = _validate_image_payload(data.get("image"))
+    image, image_error = _validate_image(data.get("image"))
     if image_error:
         return _json_error(image_error)
 
-    now = _now()
+    timestamp = _now()
     doc = {
         "content": content,
-        "tags": tags,
-        "created_at": now,
-        "updated_at": now,
+        "tags": _normalize_tags(data.get("tags")),
+        "created_at": timestamp,
+        "updated_at": timestamp,
     }
     if image:
         doc["image"] = image
-    result = _posts_collection(db).insert_one(doc)
-    post = _posts_collection(db).find_one({"_id": result.inserted_id})
-    return {"ok": True, "post": _serialize_post(post)}, 201
+
+    result = collection.insert_one(doc)
+    created = collection.find_one({"_id": result.inserted_id})
+    return {"ok": True, "post": _serialize_post(created, include_image=True)}, 201
 
 
-def _update_post(db, post_id, data):
+def _get_post(collection, post_id):
     object_id = _parse_object_id(post_id)
-    if object_id is None:
-        return _json_error("Invalid post id", 404)
+    if not object_id:
+        return _json_error("Invalid post id", 400)
+    post = collection.find_one({"_id": object_id})
+    if not post:
+        return _json_error("Post not found", 404)
+    return {"ok": True, "post": _serialize_post(post, include_image=True)}
+
+
+def _update_post(collection, post_id, data):
+    object_id = _parse_object_id(post_id)
+    if not object_id:
+        return _json_error("Invalid post id", 400)
+
     content, error = _validate_content(data)
     if error:
         return _json_error(error)
-    tags, tag_error = _normalize_tags(data.get("tags"))
-    if tag_error:
-        return _json_error(tag_error)
-    image, image_error = _validate_image_payload(data.get("image"))
-    if image_error:
-        return _json_error(image_error)
 
-    update = {"$set": {"content": content, "tags": tags, "updated_at": _now()}}
-    unset = {}
-    if image:
-        update["$set"]["image"] = image
-    elif data.get("remove_image"):
-        unset["image"] = ""
-    if unset:
-        update["$unset"] = unset
+    update_set = {
+        "content": content,
+        "tags": _normalize_tags(data.get("tags")),
+        "updated_at": _now(),
+    }
+    update_doc = {"$set": update_set}
 
-    post = _posts_collection(db).find_one_and_update(
-        {"_id": object_id}, update, return_document=ReturnDocument.AFTER
+    if data.get("image") not in (None, ""):
+        image, image_error = _validate_image(data.get("image"))
+        if image_error:
+            return _json_error(image_error)
+        update_set["image"] = image
+    elif data.get("remove_image") is True:
+        update_doc["$unset"] = {"image": ""}
+
+    post = collection.find_one_and_update(
+        {"_id": object_id},
+        update_doc,
+        return_document=ReturnDocument.AFTER,
     )
     if not post:
         return _json_error("Post not found", 404)
-    return {"ok": True, "post": _serialize_post(post)}
+    return {"ok": True, "post": _serialize_post(post, include_image=True)}
 
 
-def _delete_post(db, post_id):
+def _delete_post(collection, post_id):
     object_id = _parse_object_id(post_id)
-    if object_id is None:
-        return _json_error("Invalid post id", 404)
-    result = _posts_collection(db).delete_one({"_id": object_id})
+    if not object_id:
+        return _json_error("Invalid post id", 400)
+    result = collection.delete_one({"_id": object_id})
     if result.deleted_count == 0:
         return _json_error("Post not found", 404)
     return {"ok": True}
 
 
-def _export_posts(db):
-    posts = list(_posts_collection(db).find({}).sort("created_at", -1))
-    exported = [_serialize_post_for_json_export(post) for post in posts]
-    txt_lines = []
-    for post in exported:
-        txt_lines.append(post["created_at"] or "Unknown date")
-        if post.get("tags"):
-            txt_lines.append("Tags: " + ", ".join("#" + tag for tag in post["tags"]))
-        txt_lines.append(post.get("content", ""))
-        txt_lines.append("-" * 40)
+def _post_export_record(post, image_path=None):
+    return {
+        "id": str(post.get("_id")),
+        "content": post.get("content", ""),
+        "tags": post.get("tags", []) if isinstance(post.get("tags"), list) else [],
+        "created_at": _serialize_datetime(post.get("created_at")),
+        "updated_at": _serialize_datetime(post.get("updated_at")),
+        "image_path": image_path,
+    }
 
-    memory = io.BytesIO()
-    with zipfile.ZipFile(memory, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("posts.json", json.dumps(exported, indent=2, ensure_ascii=False))
-        archive.writestr("posts.txt", "\n".join(txt_lines))
-    memory.seek(0)
-    filename = "personal-feed-export-%s.zip" % _now().strftime("%Y%m%d-%H%M%S")
+
+def _export_posts(collection, query):
+    filt, q = _build_filter(query)
+    posts = list(collection.find(filt).sort("created_at", DESCENDING))
+
+    zip_buffer = io.BytesIO()
+    export_records = []
+    text_lines = ["Personal Feed Export", "Generated: %s" % _now().isoformat(), "Search: %s" % (q or "all posts"), "", ""]
+
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        used_image_names = set()
+
+        for index, post in enumerate(posts, start=1):
+            image_path = None
+            image = post.get("image") or None
+            if isinstance(image, dict) and image.get("data") and image.get("mime_type"):
+                try:
+                    image_bytes = base64.b64decode(image.get("data"), validate=True)
+                    base_name = _sanitize_filename(image.get("filename") or ("image" + _image_extension(image.get("mime_type"))))
+                    if "." not in base_name and _image_extension(image.get("mime_type")):
+                        base_name += _image_extension(image.get("mime_type"))
+                    stem, dot, ext = base_name.rpartition(".")
+                    if not dot:
+                        stem, ext = base_name, _image_extension(image.get("mime_type")).lstrip(".")
+                    candidate = "images/%03d_%s.%s" % (index, stem or "image", ext or "bin")
+                    counter = 2
+                    while candidate in used_image_names:
+                        candidate = "images/%03d_%s_%d.%s" % (index, stem or "image", counter, ext or "bin")
+                        counter += 1
+                    used_image_names.add(candidate)
+                    zf.writestr(candidate, image_bytes)
+                    image_path = candidate
+                except Exception:
+                    image_path = None
+
+            export_records.append(_post_export_record(post, image_path=image_path))
+            text_lines.append("Post %d" % index)
+            text_lines.append("ID: %s" % str(post.get("_id")))
+            text_lines.append("Created: %s" % _serialize_datetime(post.get("created_at")))
+            text_lines.append("Updated: %s" % _serialize_datetime(post.get("updated_at")))
+            tags = post.get("tags") if isinstance(post.get("tags"), list) else []
+            text_lines.append("Tags: %s" % (", ".join(tags) if tags else ""))
+            if image_path:
+                text_lines.append("Image: %s" % image_path)
+            text_lines.append("")
+            text_lines.append(post.get("content", ""))
+            text_lines.append("")
+            text_lines.append("-" * 72)
+            text_lines.append("")
+
+        manifest = {
+            "ok": True,
+            "generated_at": _now().isoformat(),
+            "search": q,
+            "count": len(export_records),
+            "posts": export_records,
+        }
+        zf.writestr("personal-feed.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        zf.writestr("personal-feed.txt", "\n".join(text_lines))
+        zf.writestr("README.txt", "This ZIP export includes personal-feed.json, personal-feed.txt, and any attached images in the images/ folder.\n")
+
+    encoded = base64.b64encode(zip_buffer.getvalue()).decode("ascii")
+    timestamp = _now().strftime("%Y%m%d-%H%M%S")
     return {
         "ok": True,
-        "filename": filename,
-        "content_type": "application/zip",
-        "data_base64": base64.b64encode(memory.read()).decode("ascii"),
+        "filename": "personal-feed-export-%s.zip" % timestamp,
+        "mime_type": "application/zip",
+        "data": encoded,
+        "count": len(posts),
     }
 
 
 def handle_request(path, method, data, query, db, headers):
-    normalized_path = _normalize_path(path)
     method = str(method or "GET").upper()
+    path = _normalize_path(path)
+    collection = db[COLLECTION_NAME]
+    _ensure_indexes(collection)
 
-    if normalized_path == "/posts":
+    if path == "/posts":
         if method == "GET":
-            return _list_posts(db, query)
+            return _list_posts(collection, query)
         if method == "POST":
-            return _create_post(db, data or {})
+            return _create_post(collection, data or {})
         return _json_error("Method not allowed", 405)
 
-    match = re.match(r"^/posts/([A-Fa-f0-9]{24})$", normalized_path)
+    match = re.match(r"^/posts/([a-fA-F0-9]{24})$", path)
     if match:
         post_id = match.group(1)
-        if method in ("PUT", "PATCH"):
-            return _update_post(db, post_id, data or {})
+        if method == "GET":
+            return _get_post(collection, post_id)
+        if method == "PUT":
+            return _update_post(collection, post_id, data or {})
         if method == "DELETE":
-            return _delete_post(db, post_id)
+            return _delete_post(collection, post_id)
         return _json_error("Method not allowed", 405)
 
-    if normalized_path == "/export":
-        if method == "GET":
-            return _export_posts(db)
+    if path == "/export":
+        if method in ("GET", "POST"):
+            return _export_posts(collection, query or {})
         return _json_error("Method not allowed", 405)
 
     return {"ok": False, "error": "Not found"}, 404

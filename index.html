@@ -60,7 +60,7 @@
           <div id="feedMeta" class="small text-muted">Loading...</div>
         </div>
         <div class="d-flex gap-2">
-          <button id="exportBtn" class="btn btn-success btn-sm" type="button">Export JSON + TXT</button>
+          <button id="exportBtn" class="btn btn-success btn-sm" type="button">Export ZIP</button>
           <button id="refreshBtn" class="btn btn-outline-secondary btn-sm" type="button">Refresh</button>
         </div>
       </div>
@@ -78,42 +78,43 @@
       </div>
       <div class="card-footer bg-white">
         <nav aria-label="Post pagination">
-          <ul id="pagination" class="pagination justify-content-center mb-0"></ul>
+          <ul id="pagination" class="pagination pagination-sm justify-content-center mb-0"></ul>
         </nav>
       </div>
     </section>
   </main>
 
   <div class="modal fade" id="editModal" tabindex="-1" aria-labelledby="editModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
       <div class="modal-content">
         <form id="editForm">
           <div class="modal-header">
-            <h2 class="modal-title h5" id="editModalLabel">Edit Post</h2>
+            <h5 class="modal-title" id="editModalLabel">Edit Post</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
-            <input type="hidden" id="editPostId">
+            <input type="hidden" id="editId">
             <div class="d-flex justify-content-end mb-2">
               <span id="editCharCount" class="small text-muted">0 / 5000</span>
             </div>
-            <textarea id="editContent" class="form-control" rows="8" maxlength="5000" required></textarea>
+            <textarea id="editContent" class="form-control" rows="7" maxlength="5000" required></textarea>
 
             <div class="mt-3">
               <label for="editTags" class="form-label fw-semibold">Tags</label>
-              <input id="editTags" class="form-control" type="text" maxlength="300" placeholder="Examples: work, ideas, travel">
-              <div class="form-text">Separate tags with commas or spaces.</div>
+              <input id="editTags" class="form-control" type="text" maxlength="300">
             </div>
 
             <div class="mt-3">
               <label for="editImage" class="form-label fw-semibold">Replace image</label>
               <input id="editImage" class="form-control" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
-              <div class="form-text">Leave blank to keep the current image.</div>
-              <div id="editExistingImage" class="image-preview d-none mt-3">
+              <div class="form-text">Choose a new image to replace the current image, or remove the current image below.</div>
+
+              <div id="currentImageBox" class="image-preview d-none mt-3">
                 <div class="small fw-semibold mb-2">Current image</div>
-                <img id="editExistingImageImg" alt="Current post image">
-                <button id="removeExistingImage" type="button" class="btn btn-outline-danger btn-sm mt-2">Remove current image</button>
+                <img id="currentImageImg" alt="Current post image">
+                <button id="removeCurrentImage" type="button" class="btn btn-outline-danger btn-sm mt-2">Remove current image</button>
               </div>
+
               <div id="editImagePreview" class="image-preview d-none mt-3">
                 <div class="small fw-semibold mb-2">New image</div>
                 <img id="editImagePreviewImg" alt="Selected replacement image preview">
